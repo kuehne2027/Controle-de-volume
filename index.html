@@ -426,7 +426,11 @@ function parseAny(buf, want, keep){
     var idx=[]; for(var i=0;i<header.length;i++) if(!keep || keep.indexOf(nk(header[i]))!==-1) idx.push(i);
     return idx;
   }
-  function wanted(name){ return !want || want.indexOf(normName(name))!==-1; }
+  function wanted(name){
+    if(!want) return true;
+    var nn=normName(name);
+    return want.some(function(w){ var ww=normName(w); return nn===ww || nn.indexOf(ww+' ')===0 || nn.indexOf(ww+'-')===0 || nn.indexOf(ww+'_')===0; });
+  }
 
   function fast(){
     if(typeof fflate==='undefined') throw new Error('sem fflate');
@@ -586,10 +590,11 @@ async function importBase(files){
   for(const [fi,file] of files.entries()){
     setStatus(`Lendo ${file.name} (${fi+1} de ${files.length})…`);
     const sheets=await readWorkbook(file, BASE_SHEETS, BASE_COLS);
-    const planif=sheets[Object.keys(sheets).find(n=>norm(n)==='PLANIFICATION')]||EMPTY_SHEET;
-    const base=sheets[Object.keys(sheets).find(n=>norm(n)==='BASE')]||EMPTY_SHEET;
-    const ur=sheets[Object.keys(sheets).find(n=>norm(n)==='BASE UR')]||EMPTY_SHEET;
-    const otim=sheets[Object.keys(sheets).find(n=>norm(n)==='OTIMIZADO')]||EMPTY_SHEET;
+    const sheetByBaseName = label => sheets[Object.keys(sheets).find(n=>{ const nn=norm(n), ll=norm(label); return nn===ll || nn.startsWith(ll+' ') || nn.startsWith(ll+'-') || nn.startsWith(ll+'_'); })] || EMPTY_SHEET;
+    const planif=sheetByBaseName('PLANIFICATION');
+    const base=sheetByBaseName('BASE');
+    const ur=sheetByBaseName('BASE UR');
+    const otim=sheetByBaseName('OTIMIZADO');
 
     const originMap=new Map();
     [planif,ur].forEach(sh=>{
@@ -632,9 +637,23 @@ async function importPlanning(files){
   let count=0;
   for(const [fi,file] of files.entries()){
     setStatus(`Lendo ${file.name} (${fi+1} de ${files.length})…`);
-    const sheets=await readWorkbook(file, null, PLAN_COLS);
+    const sheets=await readWorkbook(file, null, null);
     const fileCycle=cycleOf(file.name);
-    Object.values(sheets).forEach(sh=>{
+    Object.values(sheets).forEach(rawSh=>{
+      // Alguns planejamentos CSV trazem uma linha de título/data antes do cabeçalho real.
+      // Detecta ROTA/GAIOLA nas primeiras linhas e promove essa linha a cabeçalho.
+      let sh=rawSh;
+      const hasUsefulHeader=(sh.header||[]).some(h=>['ROTA','RTGROUTENAME','IDPLANEJADO','ROUTE','GAIOLA','OTIMIZADO','IDOTIMIZADO'].includes(nkey(h)));
+      if(!hasUsefulHeader){
+        const oldHeader=sh.header||[];
+        const scan=[oldHeader].concat((sh.rows||[]).slice(0,8));
+        const hi=scan.findIndex(row=>Array.isArray(row) && row.some(v=>['ROTA','RTGROUTENAME','IDPLANEJADO','ROUTE'].includes(nkey(v))) && row.some(v=>['GAIOLA','OTIMIZADO','IDOTIMIZADO','ROTAOTIMIZADA'].includes(nkey(v))));
+        if(hi>=0){
+          const hdr=scan[hi].map(v=>String(v??'').trim());
+          const data=scan.slice(hi+1).concat((sh.rows||[]).slice(Math.max(0,8)));
+          sh={header:hdr,rows:data};
+        }
+      }
       const pk=makePicker(sh);
       sh.rows.forEach(r=>{
         const route=String(pk(r,['ROTA','RTG_ROUTE_NAME','ID Planejado','ROUTE','Rota'])||'').trim();
